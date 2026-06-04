@@ -203,6 +203,7 @@ See [LICENSE](LICENSE) for the full text.
 
 - Jorge Saavedra Navarro (QGIS port and GFI 2.0 implementation)
 - Sadashiv Chaturvedi
+- Ruodan Zhuang
 - Cinzia Albertini
 - Caterina Samela
 - Salvatore Manfreda
