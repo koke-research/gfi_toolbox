@@ -1,6 +1,6 @@
 [general]
 name=Geomorphic Flood Index (GFI 2.0)
-qgisMinimumVersion=3.22
+qgisMinimumVersion=3.40
 description=Delineate flood-prone areas from a DEM using the Geomorphic Flood Index GFI = ln(hr/H), with a 2.0 hierarchical backwater (river-to-confluence) update.
 about=Pure-Python (NumPy) implementation of the Geomorphic Flood Index toolbox (Samela et al. 2017; Manfreda & Samela 2019; Manfreda et al., 2026; Navarro et al., 2026). Computes a continuous channel network from a channel-initiation threshold (Giannoni 2005), Strahler stream order, hillslope-to-river and river-to-confluence topological mappings, GFI 1.0 and GFI 2.0, and ROC-based threshold calibration against a reference flood map. Outputs include GFI rasters, binary flood maps, HAND, water depth, Marginal Area, and a CSV performance report (AUC, CSI, Kappa, F1, TPR, TNR, FPR, FNR, Bias). No external dependencies beyond QGIS / GDAL / NumPy.
 version=1.0.0
