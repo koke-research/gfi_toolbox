@@ -59,7 +59,7 @@ No additional Python packages are required.
 
 ## Installation
 
-### From the QGIS Plugin Repository (recommended)
+### From the QGIS Plugin Repository (coming soon)
 
 1. Open QGIS → **Plugins** → **Manage and Install Plugins…**
 2. Search for `Geomorphic Flood Index`
