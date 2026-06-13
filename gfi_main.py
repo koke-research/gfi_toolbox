@@ -16,6 +16,20 @@ from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import Qgis, QgsMapLayerProxyModel, QgsRasterLayer, QgsProject
 from qgis.gui import QgsMapLayerComboBox, QgsFileWidget
 
+# PyQt5 / PyQt6 enum compatibility
+try:
+    # PyQt6 (QGIS 4.x)
+    _HLINE       = QFrame.Shape.HLine
+    _SUNKEN      = QFrame.Shadow.Sunken
+    _GET_DIR     = QgsFileWidget.StorageMode.GetDirectory
+    _PROXY_RASTER = QgsMapLayerProxyModel.Filter.RasterLayer
+except AttributeError:
+    # PyQt5 (QGIS 3.x)
+    _HLINE       = QFrame.HLine          # type: ignore[attr-defined]
+    _SUNKEN      = QFrame.Sunken         # type: ignore[attr-defined]
+    _GET_DIR     = _GET_DIR   # type: ignore[attr-defined]
+    _PROXY_RASTER = QgsMapLayerProxyModel.RasterLayer  # type: ignore[attr-defined]
+
 
 # ---------------------------------------------------------------------------
 # Output layer registry
@@ -112,7 +126,7 @@ class GFIPlugin:
 
         def _combo():
             cb = QgsMapLayerComboBox()
-            cb.setFilters(QgsMapLayerProxyModel.RasterLayer)
+            cb.setFilters(_PROXY_RASTER)
             return cb
 
         lay_in.addWidget(QLabel("DEM:"),                        0, 0)
@@ -125,7 +139,7 @@ class GFIPlugin:
         self.combo_slope = _combo(); lay_in.addWidget(self.combo_slope, 3, 1)
 
         # Flood map — optional
-        sep = QFrame(); sep.setFrameShape(QFrame.HLine); sep.setFrameShadow(QFrame.Sunken)
+        sep = QFrame(); sep.setFrameShape(_HLINE); sep.setFrameShadow(_SUNKEN)
         lay_in.addWidget(sep, 4, 0, 1, 2)
 
         flood_label = QLabel("Flood Reference Map (optional):")
@@ -205,7 +219,7 @@ class GFIPlugin:
         folder_row = QHBoxLayout(); folder_row.setContentsMargins(0, 0, 0, 0)
         folder_row.addWidget(QLabel("Folder:"))
         self.folder_out = QgsFileWidget()
-        self.folder_out.setStorageMode(QgsFileWidget.GetDirectory)
+        self.folder_out.setStorageMode(_GET_DIR)
         folder_row.addWidget(self.folder_out)
         self.folder_widget.setLayout(folder_row)
         lay_out.addWidget(self.folder_widget)
@@ -216,7 +230,7 @@ class GFIPlugin:
         self.check_csv.setToolTip("Requires flood reference map. Saves AUC, CSI, Kappa, TPR, TNR, etc.")
         lay_out.addWidget(self.check_csv)
 
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.HLine); sep2.setFrameShadow(QFrame.Sunken)
+        sep2 = QFrame(); sep2.setFrameShape(_HLINE); sep2.setFrameShadow(_SUNKEN)
         lay_out.addWidget(sep2)
 
         # Scrollable layer checklist
@@ -259,7 +273,7 @@ class GFIPlugin:
 
         self.dialog.setLayout(root)
         self._on_storage_changed()
-        self.dialog.exec_()
+        self.dialog.exec()
 
     # -----------------------------------------------------------------------
     # UI helpers
