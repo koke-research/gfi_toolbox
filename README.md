@@ -48,7 +48,7 @@ GFI 2.0 updates `hr` along each channel reach by propagating backwater influence
 
 | Dependency | Version |
 |-----------|---------|
-| QGIS | ≥ 3.40 |
+| QGIS | ≥ 3.22 |
 | Python | ≥ 3.9 (bundled with QGIS) |
 | NumPy | bundled with QGIS |
 | GDAL | bundled with QGIS |
@@ -59,7 +59,7 @@ No additional Python packages are required.
 
 ## Installation
 
-### From the QGIS Plugin Repository (coming soon)
+### From the QGIS Plugin Repository (recommended)
 
 1. Open QGIS → **Plugins** → **Manage and Install Plugins…**
 2. Search for `Geomorphic Flood Index`
@@ -203,7 +203,6 @@ See [LICENSE](LICENSE) for the full text.
 
 - Jorge Saavedra Navarro (QGIS port and GFI 2.0 implementation)
 - Sadashiv Chaturvedi
-- Ruodan Zhuang
 - Cinzia Albertini
 - Caterina Samela
 - Salvatore Manfreda
