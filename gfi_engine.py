@@ -43,9 +43,29 @@ def raster_to_array(qgs_layer, feedback=None):
     bounds   : dict  {xmin, ymax, cellsize}
     """
     provider = qgs_layer.dataProvider()
-    extent   = provider.extent()
-    rows     = qgs_layer.height()
-    cols     = qgs_layer.width()
+
+    # Use layer dimensions first; fall back to provider if layer returns 0
+    rows = qgs_layer.height()
+    cols = qgs_layer.width()
+
+    if rows == 0 or cols == 0:
+        # Some formats (e.g. GeoTIFF loaded via URI) report 0 on the layer
+        # but the provider has the correct values
+        rows = provider.ySize() if hasattr(provider, 'ySize') else 0
+        cols = provider.xSize() if hasattr(provider, 'xSize') else 0
+
+    if rows == 0 or cols == 0:
+        raise ValueError(
+            f"Cannot read raster '{qgs_layer.name()}': "
+            f"layer reports 0 rows or 0 cols. "
+            f"Make sure the layer is fully loaded and its CRS is set correctly.")
+
+    extent = provider.extent()
+
+    if extent.isEmpty() or extent.width() == 0:
+        raise ValueError(
+            f"Cannot read raster '{qgs_layer.name()}': extent is empty or has zero width. "
+            f"Check that the file exists and is a valid raster.")
 
     if feedback:
         feedback.pushInfo(f"  Reading {rows}×{cols} raster…")
@@ -277,13 +297,23 @@ def compute_strahler_order(channel, FlowDir, feedback=None):
 
 
 # =============================================================================
-# HILLSLOPE-TO-RIVER MAPPING
+# HILLSLOPE-TO-RIVER MAPPING  (vectorised wave propagation)
 # =============================================================================
 
 def hillslope_to_river(DEM, channel, FlowDir, cellsize, feedback=None):
     """
-    For every non-channel pixel, trace downstream to the first channel pixel
-    and record its (row, col).
+    For every non-channel pixel, find the nearest channel pixel downstream.
+
+    Algorithm: reverse-BFS wave propagation.
+    1. Seed the result arrays with channel pixel coordinates at channel pixels.
+    2. For every non-channel pixel, look at where it drains TO (downstream).
+       If the downstream neighbour already has a channel assignment, copy it.
+    3. Repeat in topological order (upstream → downstream) until no pixel
+       changes.
+
+    This replaces the O(rows*cols * path_length) Python loop with a
+    vectorised NumPy pass that converges in O(max_path_length) iterations,
+    each operating on all unresolved pixels simultaneously.
 
     Returns
     -------
@@ -292,33 +322,74 @@ def hillslope_to_river(DEM, channel, FlowDir, cellsize, feedback=None):
     """
     rows, cols = channel.shape
     if feedback:
-        feedback.pushInfo("  Hillslope-to-river mapping…")
+        feedback.pushInfo("  Hillslope-to-river mapping (vectorised)…")
 
-    FD             = np.nan_to_num(FlowDir, nan=0.0)
+    FD = np.nan_to_num(FlowDir, nan=0.0)
     moves, diag_keys, FD_rt, _ = get_flow_moves(FD)
     if moves is None:
         nan_g = np.full((rows, cols), np.nan, dtype=np.float32)
         return nan_g, nan_g.copy()
 
-    ROW_ch    = np.full((rows, cols), np.nan, dtype=np.float32)
-    COL_ch    = np.full((rows, cols), np.nan, dtype=np.float32)
-    max_steps = rows + cols
+    # Build downstream index arrays: for each pixel (r,c) → (nr, nc)
+    # Use -1 to flag sinks / edges
+    ds_r = np.full((rows, cols), -1, dtype=np.int32)
+    ds_c = np.full((rows, cols), -1, dtype=np.int32)
 
-    for i in range(1, rows - 1):
-        for j in range(1, cols - 1):
-            if channel[i, j] != 0 or np.isnan(DEM[i, j]):
-                continue
-            r, c, steps = i, j, 0
-            while 0 < r < rows - 1 and 0 < c < cols - 1 and steps < max_steps:
-                if channel[r, c] == 1:
-                    ROW_ch[i, j] = r
-                    COL_ch[i, j] = c
-                    break
-                nr, nc, _ = trace_flow_step(FD_rt, moves, diag_keys, r, c, 0.0, cellsize)
-                if nr is None:
-                    break
-                r, c = nr, nc
-                steps += 1
+    for fd_val, (dr, dc) in moves.items():
+        mask = (FD_rt == fd_val)
+        src_r, src_c = np.where(mask)
+        tgt_r = src_r + dr
+        tgt_c = src_c + dc
+        valid = (tgt_r >= 0) & (tgt_r < rows) & (tgt_c >= 0) & (tgt_c < cols)
+        ds_r[src_r[valid], src_c[valid]] = tgt_r[valid]
+        ds_c[src_r[valid], src_c[valid]] = tgt_c[valid]
+
+    # Initialise: channel pixels map to themselves
+    ROW_ch = np.full((rows, cols), np.nan, dtype=np.float32)
+    COL_ch = np.full((rows, cols), np.nan, dtype=np.float32)
+    ch_mask = channel == 1
+    rr, cc = np.where(ch_mask)
+    ROW_ch[rr, cc] = rr.astype(np.float32)
+    COL_ch[rr, cc] = cc.astype(np.float32)
+
+    # Valid hillslope pixels (DEM not NaN, not channel)
+    valid_hl = ~np.isnan(DEM) & ~ch_mask
+
+    # Iterative wave: propagate channel assignment upstream
+    # Each iteration: unresolved pixel → check downstream neighbour
+    max_iter = rows + cols
+    for iteration in range(max_iter):
+        # Pixels still unresolved
+        unresolved = valid_hl & np.isnan(ROW_ch)
+        n_unresolved = np.count_nonzero(unresolved)
+        if n_unresolved == 0:
+            break
+
+        ur, uc = np.where(unresolved)
+        # Downstream neighbours
+        nr = ds_r[ur, uc]
+        nc = ds_c[ur, uc]
+
+        # Only process pixels whose downstream neighbour is valid and resolved
+        has_ds = (nr >= 0)
+        nr_c = np.where(has_ds, nr, 0)
+        nc_c = np.where(has_ds, nc, 0)
+        ds_resolved = ~np.isnan(ROW_ch[nr_c, nc_c])
+        can_update = has_ds & ds_resolved
+
+        if not np.any(can_update):
+            break  # No more progress possible
+
+        ur_u = ur[can_update]
+        uc_u = uc[can_update]
+        nr_u = nr[can_update]
+        nc_u = nc[can_update]
+
+        ROW_ch[ur_u, uc_u] = ROW_ch[nr_u, nc_u]
+        COL_ch[ur_u, uc_u] = COL_ch[nr_u, nc_u]
+
+        if feedback and iteration % 20 == 0:
+            feedback.pushInfo(f"    Wave {iteration}: {n_unresolved} unresolved pixels")
 
     if feedback:
         feedback.pushInfo(f"    Hillslope pixels mapped: {np.count_nonzero(~np.isnan(ROW_ch))}")
@@ -326,54 +397,92 @@ def hillslope_to_river(DEM, channel, FlowDir, cellsize, feedback=None):
 
 
 # =============================================================================
-# RIVER-TO-CONFLUENCE MAPPING
+# RIVER-TO-CONFLUENCE MAPPING  (vectorised wave propagation)
 # =============================================================================
 
 def river_to_confluence(channel, strahler, FlowDir, cellsize, feedback=None):
     """
-    For every channel pixel, trace downstream until Strahler order increases
-    (= confluence) and record that pixel's (row, col).
+    For every channel pixel, find the next downstream confluence
+    (= pixel where Strahler order increases).
+
+    Algorithm: same downstream-index approach as hillslope_to_river.
+    Seed confluence pixels (where ds neighbour has higher order),
+    then propagate upstream along same-order reaches.
 
     Returns
     -------
-    ROW_confluence : float32 2-D array  (NaN for outlet-order pixels)
+    ROW_confluence : float32 2-D array  (NaN for outlet pixels)
     COL_confluence : float32 2-D array
     """
     rows, cols = channel.shape
     if feedback:
-        feedback.pushInfo("  River-to-confluence mapping…")
+        feedback.pushInfo("  River-to-confluence mapping (vectorised)…")
 
-    FD             = np.nan_to_num(FlowDir, nan=0.0)
+    FD = np.nan_to_num(FlowDir, nan=0.0)
     moves, diag_keys, FD_rt, _ = get_flow_moves(FD)
     if moves is None:
         nan_g = np.full((rows, cols), np.nan, dtype=np.float32)
         return nan_g, nan_g.copy()
 
-    max_order      = int(np.max(strahler))
-    ROW_conf       = np.full((rows, cols), np.nan, dtype=np.float32)
-    COL_conf       = np.full((rows, cols), np.nan, dtype=np.float32)
-    max_steps      = rows + cols
+    # Build downstream index arrays
+    ds_r = np.full((rows, cols), -1, dtype=np.int32)
+    ds_c = np.full((rows, cols), -1, dtype=np.int32)
 
-    for i, j in zip(*np.where(channel == 1)):
-        s0 = int(strahler[i, j])
-        if s0 == 0 or s0 >= max_order:
-            continue
-        r, c, steps = i, j, 0
-        while 0 < r < rows - 1 and 0 < c < cols - 1 and steps < max_steps:
-            nr, nc, _ = trace_flow_step(FD_rt, moves, diag_keys, r, c, 0.0, cellsize)
-            if nr is None:
-                break
-            if strahler[nr, nc] > s0:
-                ROW_conf[i, j] = nr
-                COL_conf[i, j] = nc
-                break
-            if strahler[nr, nc] == s0:
-                r, c = nr, nc
-                steps += 1
-            else:
-                ROW_conf[i, j] = r
-                COL_conf[i, j] = c
-                break
+    for fd_val, (dr, dc) in moves.items():
+        mask = (FD_rt == fd_val)
+        src_r, src_c = np.where(mask)
+        tgt_r = src_r + dr
+        tgt_c = src_c + dc
+        valid = (tgt_r >= 0) & (tgt_r < rows) & (tgt_c >= 0) & (tgt_c < cols)
+        ds_r[src_r[valid], src_c[valid]] = tgt_r[valid]
+        ds_c[src_r[valid], src_c[valid]] = tgt_c[valid]
+
+    max_order = int(np.max(strahler))
+    ROW_conf  = np.full((rows, cols), np.nan, dtype=np.float32)
+    COL_conf  = np.full((rows, cols), np.nan, dtype=np.float32)
+
+    ch_r, ch_c = np.where(channel == 1)
+
+    # Seed: pixels whose downstream neighbour has a higher Strahler order
+    has_ds  = ds_r[ch_r, ch_c] >= 0
+    nr_all  = np.where(has_ds, ds_r[ch_r, ch_c], 0)
+    nc_all  = np.where(has_ds, ds_c[ch_r, ch_c], 0)
+
+    s_self  = strahler[ch_r, ch_c]
+    s_next  = strahler[nr_all, nc_all]
+    is_conf = has_ds & (s_next > s_self) & (s_self < max_order)
+
+    ROW_conf[ch_r[is_conf], ch_c[is_conf]] = nr_all[is_conf].astype(np.float32)
+    COL_conf[ch_r[is_conf], ch_c[is_conf]] = nc_all[is_conf].astype(np.float32)
+
+    # Propagate upstream along same-order reaches
+    max_iter = rows + cols
+    for _ in range(max_iter):
+        unresolved = (channel == 1) & np.isnan(ROW_conf) & (strahler < max_order) & (strahler > 0)
+        if not np.any(unresolved):
+            break
+
+        ur, uc = np.where(unresolved)
+        nr = ds_r[ur, uc]
+        nc = ds_c[ur, uc]
+
+        has_ds   = nr >= 0
+        nr_c     = np.where(has_ds, nr, 0)
+        nc_c     = np.where(has_ds, nc, 0)
+        resolved = ~np.isnan(ROW_conf[nr_c, nc_c])
+        same_ord = strahler[nr_c, nc_c] == strahler[ur, uc]
+        can_upd  = has_ds & resolved & same_ord
+
+        if not np.any(can_upd):
+            break
+
+        ur_u = ur[can_upd]
+        uc_u = uc[can_upd]
+        nr_u = nr[can_upd]
+        nc_u = nc[can_upd]
+
+        ROW_conf[ur_u, uc_u] = ROW_conf[nr_u, nc_u]
+        COL_conf[ur_u, uc_u] = COL_conf[nr_u, nc_u]
 
     if feedback:
         feedback.pushInfo(f"    Channel pixels with confluence: {np.count_nonzero(~np.isnan(ROW_conf))}")
@@ -527,7 +636,7 @@ def calibrate_gfi(GFI, flood_map, ROW_channel, COL_channel, channel,
     MargArea[channel > 0] = flood_map[channel > 0]
 
     # Evaluation mask: finite GFI + valid flood truth + inside MargArea
-    mask_2d = MargArea > 0
+    mask_2d = np.isfinite(GFI) & ~np.isnan(flood_map) & ~np.isnan(MargArea)
     n_valid = int(np.count_nonzero(mask_2d))
 
     if feedback:
