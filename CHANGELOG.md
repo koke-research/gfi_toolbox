@@ -7,6 +7,15 @@ Version numbering follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.1] — 2026-06-13
+
+### Fixed
+- PyQt5/PyQt6 compatibility: replaced `QFrame.HLine`, `QFrame.Sunken`, `QgsFileWidget.GetDirectory`, and `QgsMapLayerProxyModel.RasterLayer` with a `try/except` block that resolves the correct enum namespace for QGIS 3.x (PyQt5) and QGIS 4.x (PyQt6)
+- Replaced `QDialog.exec_()` with `exec()` — required in PyQt6 / QGIS 4.x
+- `qgisMinimumVersion` corrected to `3.22`; added `qgisMaximumVersion=4.99` to allow installation on QGIS 4.x
+
+---
+
 ## [1.0.0] — 2026-06-04
 
 ### Added
@@ -34,5 +43,5 @@ Version numbering follows [Semantic Versioning](https://semver.org/).
 - Progress bar with per-step status messages
 
 ### Plugin info
-- QGIS minimum version: 3.40
+- QGIS minimum version: 3.22
 - No external Python dependencies (NumPy and GDAL bundled with QGIS)
